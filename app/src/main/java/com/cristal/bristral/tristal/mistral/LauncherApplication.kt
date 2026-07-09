@@ -1,7 +1,6 @@
 package com.cristal.bristral.tristal.mistral
 
 import android.app.Application
-import android.content.Intent
 
 class LauncherApplication : Application() {
 
@@ -21,16 +20,7 @@ class LauncherApplication : Application() {
         // ── Pre-flight: verify .enc assets exist before anything runs ─────────
         isDecryptionReady = hasRequiredEncAssets()
 
-        // ── Start LauncherService only if assets are intact ───────────────────
-        if (isDecryptionReady) {
-            try {
-                startService(Intent(this, Class.forName(
-                    "com.cristal.bristral.tristal.mistral.service.LauncherService"
-                )))
-            } catch (e: Exception) {
-                // Service start failure is non-fatal
-            }
-        }
+
     }
 
     // ── Check all required .enc files exist in assets ─────────────────────────
