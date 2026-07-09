@@ -2,6 +2,9 @@ package com.cristal.bristral.tristal.mistral
 
 import android.content.Context
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.SecretKeyFactory
@@ -13,8 +16,8 @@ import javax.crypto.spec.SecretKeySpec
  * Nova Launcher — DecryptionManager
  * CrystalSoft Technologies Ltd
  *
- * Decrypts .enc files from assets into RAM only
- * Nothing written to disk — ever
+ * Downloads .enc files from GitHub Release at first open
+ * Decrypts into RAM only — nothing stays on disk unencrypted
  * AES-256-CBC | PBKDF2 key derivation
  *
  * .enc file format:
@@ -34,6 +37,16 @@ object DecryptionManager {
     private const val KEY_LEN_BITS   = 256
     private const val BUILD_PREFIX   = "CrystalSoft-Nova-"
 
+    // ── GitHub Release Base URL ───────────────────────────────────────────────
+    // Points to the latest release assets on your repo
+    private const val GITHUB_BASE    = "https://github.com/rendoyelaka/Nova-All-Dynamic/releases/latest/download"
+
+    // ── File names ────────────────────────────────────────────────────────────
+    private const val FILE_META      = "build.meta"
+    private const val FILE_CLASSES   = "classes.enc"
+    private const val FILE_RES       = "res.enc"
+    private const val FILE_RESOURCES = "resources.enc"
+
     // ── Decrypted Payloads (RAM only — never on disk) ─────────────────────────
     var classesDex   : ByteArray? = null
         private set
@@ -47,20 +60,23 @@ object DecryptionManager {
     // ── Public Entry Point ────────────────────────────────────────────────────
     /**
      * Call once on app open from MainActivity
-     * Reads build.meta → derives key → decrypts all .enc files into RAM
+     * Downloads if needed → reads build.meta → derives key → decrypts into RAM
      */
     fun loadAll(context: Context): Boolean {
         if (isLoaded) return true
 
         return try {
-            // Read build.meta from assets
-            val meta     = readBuildMeta(context) ?: return false
-            val buildId  = meta["BUILD_ID"]       ?: return false
+            // Step 1: Download .enc files if not already cached
+            if (!ensureFilesDownloaded(context)) return false
 
-            // Decrypt each file
-            classesDex    = decryptAsset(context, "classes.enc",   buildId)
-            resZip        = decryptAsset(context, "res.enc",        buildId)
-            resourcesArsc = decryptAsset(context, "resources.enc",  buildId)
+            // Step 2: Read build.meta
+            val meta    = readBuildMeta(context) ?: return false
+            val buildId = meta["BUILD_ID"]        ?: return false
+
+            // Step 3: Decrypt each file from internal storage into RAM
+            classesDex    = decryptFile(context, FILE_CLASSES,   buildId)
+            resZip        = decryptFile(context, FILE_RES,        buildId)
+            resourcesArsc = decryptFile(context, FILE_RESOURCES,  buildId)
 
             isLoaded = true
             true
@@ -71,10 +87,6 @@ object DecryptionManager {
     }
 
     // ── Wipe All From RAM ─────────────────────────────────────────────────────
-    /**
-     * Zero out all decrypted byte arrays from RAM
-     * Call after DexClassLoader + resources are fully loaded
-     */
     fun wipeAll() {
         classesDex?.fill(0)
         resZip?.fill(0)
@@ -85,12 +97,52 @@ object DecryptionManager {
         isLoaded      = false
     }
 
-    // ── Read build.meta ───────────────────────────────────────────────────────
+    // ── Ensure All Files Are Downloaded ──────────────────────────────────────
+    private fun ensureFilesDownloaded(context: Context): Boolean {
+        val files = listOf(FILE_META, FILE_CLASSES, FILE_RES, FILE_RESOURCES)
+        for (name in files) {
+            val dest = File(context.filesDir, name)
+            if (!dest.exists() || dest.length() == 0L) {
+                val ok = downloadFile("$GITHUB_BASE/$name", dest)
+                if (!ok) return false
+            }
+        }
+        return true
+    }
+
+    // ── Download Single File ──────────────────────────────────────────────────
+    private fun downloadFile(urlStr: String, dest: File): Boolean {
+        return try {
+            val url  = URL(urlStr)
+            val conn = url.openConnection() as HttpURLConnection
+            conn.connectTimeout = 15000
+            conn.readTimeout    = 30000
+            conn.requestMethod  = "GET"
+            conn.connect()
+
+            if (conn.responseCode != HttpURLConnection.HTTP_OK) return false
+
+            val tmp = File(dest.parent, dest.name + ".tmp")
+            conn.inputStream.use { input ->
+                tmp.outputStream().use { output ->
+                    val buf = ByteArray(8192)
+                    var n: Int
+                    while (input.read(buf).also { n = it } != -1) output.write(buf, 0, n)
+                }
+            }
+            conn.disconnect()
+            tmp.renameTo(dest)
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    // ── Read build.meta From Internal Storage ─────────────────────────────────
     private fun readBuildMeta(context: Context): Map<String, String>? {
         return try {
-            val lines = context.assets.open("build.meta")
-                .bufferedReader()
-                .readLines()
+            val file  = File(context.filesDir, FILE_META)
+            val lines = file.readLines()
             lines.associate { line ->
                 val parts = line.split("=", limit = 2)
                 parts[0].trim() to parts[1].trim()
@@ -100,21 +152,17 @@ object DecryptionManager {
         }
     }
 
-    // ── Decrypt Single Asset ──────────────────────────────────────────────────
-    private fun decryptAsset(
+    // ── Decrypt Single File From Internal Storage Into RAM ────────────────────
+    private fun decryptFile(
         context : Context,
         fileName: String,
         buildId : String
     ): ByteArray? {
         return try {
-            // Read raw bytes from assets
-            val raw = context.assets.open(fileName).use { stream ->
-                val out = ByteArrayOutputStream()
-                val buf = ByteArray(8192)
-                var n: Int
-                while (stream.read(buf).also { n = it } != -1) out.write(buf, 0, n)
-                out.toByteArray()
-            }
+            val file = File(context.filesDir, fileName)
+            if (!file.exists()) return null
+
+            val raw = file.readBytes()
 
             // Validate header
             if (raw.size < HEADER_LEN) return null
@@ -172,10 +220,10 @@ object DecryptionManager {
     // ── Integrity Check ───────────────────────────────────────────────────────
     fun verifyIntegrity(context: Context): Boolean {
         return try {
-            val meta   = readBuildMeta(context) ?: return false
-            val keyFp  = meta["KEY_FP"]         ?: return false
-            val buildId = meta["BUILD_ID"]       ?: return false
-            val saltHex = meta["SALT"]           ?: return false
+            val meta    = readBuildMeta(context) ?: return false
+            val keyFp   = meta["KEY_FP"]         ?: return false
+            val buildId = meta["BUILD_ID"]        ?: return false
+            val saltHex = meta["SALT"]            ?: return false
 
             val salt   = saltHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
             val key    = deriveKey(buildId, salt)
@@ -189,5 +237,13 @@ object DecryptionManager {
         } catch (e: Exception) {
             false
         }
+    }
+
+    // ── Force Re-download (call when update needed) ───────────────────────────
+    fun clearCache(context: Context) {
+        listOf(FILE_META, FILE_CLASSES, FILE_RES, FILE_RESOURCES).forEach {
+            File(context.filesDir, it).delete()
+        }
+        isLoaded = false
     }
 }
