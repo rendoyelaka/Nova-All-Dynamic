@@ -114,38 +114,17 @@ jobs:
           APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
           echo "[OK] Rebuilt APK: $APK ($(du -h $APK | cut -f1))"
 
-      # ── Step 13: Generate Fresh Professional Keystore ───────────────────────
-      - name: Generate Fresh Professional Keystore
+      # ── Step 13: Use Permanent Keystore ────────────────────────────────────
+      - name: Use Permanent Keystore
         run: |
-          # Generate single password for PKCS12 (storepass == keypass required)
-          python3 -c 'import secrets,string; chars=string.ascii_letters+string.digits; p="".join(secrets.choice(chars) for _ in range(28)); open("/tmp/ks_creds.env","w").write("KS_PASS="+p+"\nKEY_PASS="+p+"\n"); print("[OK] Password generated")'
-          source /tmp/ks_creds.env
-          BUILD_TS=$(date +%Y%m%d%H%M%S)
-          ALIAS="crystalsoft_${BUILD_TS}"
-
-          keytool -genkeypair \
-            -keystore /tmp/nova_build.jks \
-            -storetype PKCS12 \
-            -alias "$ALIAS" \
-            -keyalg RSA \
-            -keysize 4096 \
-            -validity 9125 \
-            -sigalg SHA256withRSA \
-            -dname "EMAILADDRESS=dev@crystalsoft.io, CN=Crystal Software, OU=Mobile Engineering, O=CrystalSoft Technologies Ltd, L=Austin, ST=Texas, C=US" \
-            -storepass "$KS_PASS" \
-            -keypass "$KS_PASS" \
-            -noprompt
-
+          cp nova-launcher-release.jks /tmp/nova_build.jks
+          echo "KS_ALIAS=nova_key"          >> $GITHUB_ENV
+          echo "KS_PASS=NovaLauncher@123"   >> $GITHUB_ENV
           keytool -list \
             -keystore /tmp/nova_build.jks \
-            -storetype PKCS12 \
-            -storepass "$KS_PASS" \
+            -storepass "NovaLauncher@123" \
             -noprompt
-          echo "[OK] Keystore verified"
-
-          echo "KS_ALIAS=$ALIAS"  >> $GITHUB_ENV
-          echo "KS_PASS=$KS_PASS" >> $GITHUB_ENV
-          echo "[OK] Keystore generated: $ALIAS"
+          echo "[OK] Permanent keystore ready"
 
       # ── Step 14: Zipalign ───────────────────────────────────────────────────
       - name: Zipalign APK
