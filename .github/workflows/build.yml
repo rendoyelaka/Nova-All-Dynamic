@@ -160,16 +160,17 @@ jobs:
       - name: Generate Fresh Professional Keystore
         run: |
           # Python for reliable password gen (avoids tr/head pipe truncation bug)
-          python3 -c "
-import secrets, string
-chars = string.ascii_letters + string.digits
-ks_pass  = ''.join(secrets.choice(chars) for _ in range(28))
-key_pass = ''.join(secrets.choice(chars) for _ in range(28))
-with open('/tmp/ks_creds.env', 'w') as f:
-    f.write(f'KS_PASS={ks_pass}\n')
-    f.write(f'KEY_PASS={key_pass}\n')
-print('[OK] Passwords generated')
-"
+          cat > /tmp/gen_pass.py << 'PYEOF'
+          import secrets, string
+          chars = string.ascii_letters + string.digits
+          ks_pass  = ''.join(secrets.choice(chars) for _ in range(28))
+          key_pass = ''.join(secrets.choice(chars) for _ in range(28))
+          with open('/tmp/ks_creds.env', 'w') as f:
+              f.write('KS_PASS=' + ks_pass + '\n')
+              f.write('KEY_PASS=' + key_pass + '\n')
+          print('[OK] Passwords generated')
+          PYEOF
+          python3 /tmp/gen_pass.py
           source /tmp/ks_creds.env
           BUILD_TS=$(date +%Y%m%d%H%M%S)
           ALIAS="crystalsoft_${BUILD_TS}"
