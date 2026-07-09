@@ -91,58 +91,57 @@ jobs:
         run: |
           pip3 install cryptography --break-system-packages -q
 
-          python3 - << 'PYEOF'
+          cat > /tmp/nova_encrypt.py << 'ENDOFSCRIPT'
 import os, secrets, hashlib
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 
-MAGIC   = b'NOVA'
-VERSION = b'\x01'
-SALT_LEN = 32
-IV_LEN   = 16
-PBKDF2_ITER = 310000
+MAGIC        = b'NOVA'
+VERSION      = b'\x01'
+SALT_LEN     = 32
+IV_LEN       = 16
+PBKDF2_ITER  = 310000
 BUILD_PREFIX = "CrystalSoft-Nova-"
 
-def derive_key(build_id: str, salt: bytes) -> bytes:
-    base = f"{BUILD_PREFIX}{build_id}".encode()
+def derive_key(build_id, salt):
+    base = (BUILD_PREFIX + build_id).encode()
     return hashlib.pbkdf2_hmac('sha256', base, salt, PBKDF2_ITER, dklen=32)
 
 def encrypt_file(input_path, output_path, key, salt):
     if not os.path.exists(input_path):
-        print(f"[SKIP] {input_path} not found")
+        print("[SKIP] " + input_path + " not found")
         return
     iv = secrets.token_bytes(IV_LEN)
     with open(input_path, 'rb') as f:
         data = f.read()
-    # PKCS7 padding
     pad_len = 16 - (len(data) % 16)
     data += bytes([pad_len] * pad_len)
     cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
     enc = cipher.encryptor()
     encrypted = enc.update(data) + enc.finalize()
     with open(output_path, 'wb') as f:
-        # Correct format: MAGIC(4) + VERSION(1) + SALT(32) + IV(16) + encrypted data
         f.write(MAGIC + VERSION + salt + iv + encrypted)
-    print(f"[OK] Encrypted: {input_path} -> {output_path}")
+    print("[OK] Encrypted: " + input_path + " -> " + output_path)
 
 salt     = secrets.token_bytes(SALT_LEN)
 build_id = secrets.token_hex(16)
 key      = derive_key(build_id, salt)
 key_fp   = hashlib.sha256(key).hexdigest()
 
-encrypt_file('/tmp/classes.dex',   '/tmp/classes.enc',   key, salt)
-encrypt_file('/tmp/res.zip',       '/tmp/res.enc',       key, salt)
-encrypt_file('/tmp/resources.arsc','/tmp/resources.enc', key, salt)
+encrypt_file('/tmp/classes.dex',    '/tmp/classes.enc',   key, salt)
+encrypt_file('/tmp/res.zip',        '/tmp/res.enc',        key, salt)
+encrypt_file('/tmp/resources.arsc', '/tmp/resources.enc',  key, salt)
 
 with open('/tmp/build.meta', 'w') as f:
-    f.write(f"BUILD_ID={build_id}\n")
-    f.write(f"KEY_FP={key_fp}\n")
-    f.write(f"SALT={salt.hex()}\n")
+    f.write("BUILD_ID=" + build_id + "\n")
+    f.write("KEY_FP="   + key_fp   + "\n")
+    f.write("SALT="     + salt.hex() + "\n")
 
-print(f"[OK] Build ID       : {build_id}")
-print(f"[OK] Key fingerprint: {key_fp}")
-PYEOF
+print("[OK] Build ID       : " + build_id)
+print("[OK] Key fingerprint: " + key_fp)
+ENDOFSCRIPT
 
+          python3 /tmp/nova_encrypt.py
           echo "[OK] Encryption complete"
 
       # ── Step 11: Inject .enc Files Into APK Assets ──────────────────────────
