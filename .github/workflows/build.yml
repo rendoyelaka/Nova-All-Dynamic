@@ -10,6 +10,9 @@ jobs:
     name: Build & Encrypt & Sign Nova APK
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: write
+
     steps:
 
       # ── Step 1: Checkout ────────────────────────────────────────────────────
@@ -93,68 +96,68 @@ jobs:
           python3 scripts/encrypt.py
           echo "[OK] Encryption complete"
 
-      # ── Step 11: Inject .enc Files Into APK Assets ──────────────────────────
-      - name: Inject Encrypted Files Into APK Assets
+      # ── Step 11: Push Encrypted Files to GitHub Release ─────────────────────
+      - name: Push Encrypted Files to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p app/src/main/assets
+          pip3 install requests --break-system-packages -q
 
-          # Copy .enc files into assets (companion.apk stays untouched)
-          [ -f /tmp/classes.enc ]    && cp /tmp/classes.enc    app/src/main/assets/
-          [ -f /tmp/res.enc ]        && cp /tmp/res.enc        app/src/main/assets/
-          [ -f /tmp/resources.enc ]  && cp /tmp/resources.enc  app/src/main/assets/
-          [ -f /tmp/build.meta ]     && cp /tmp/build.meta     app/src/main/assets/
+          # Delete existing latest release if exists
+          gh release delete latest --yes 2>/dev/null || true
 
-          echo "[OK] Assets folder contents:"
-          ls -lh app/src/main/assets/
+          # Create new release tagged "latest"
+          gh release create latest \
+            --title "Nova Launcher Payload" \
+            --notes "Encrypted payload - auto generated" \
+            --latest
 
-      # ── Step 12: Rebuild APK With Encrypted Assets ──────────────────────────
-      - name: Rebuild APK With Encrypted Assets
+          # Upload encrypted files
+          gh release upload latest \
+            app/src/main/assets/classes.enc \
+            app/src/main/assets/res.enc \
+            app/src/main/assets/resources.enc \
+            app/src/main/assets/build.meta \
+            --clobber
+
+          echo "[OK] Encrypted files pushed to GitHub Release"
+
+      # ── Step 12: Strip .enc Files From APK Assets (stub only) ───────────────
+      - name: Strip Encrypted Files From Assets
+        run: |
+          rm -f app/src/main/assets/classes.enc
+          rm -f app/src/main/assets/res.enc
+          rm -f app/src/main/assets/resources.enc
+          rm -f app/src/main/assets/build.meta
+          echo "[OK] Assets stripped - stub APK will have no .enc files"
+          ls -lh app/src/main/assets/ || echo "[OK] Assets folder empty"
+
+      # ── Step 13: Build Stub APK (tiny - no encrypted payload) ───────────────
+      - name: Build Stub APK
         run: |
           ./gradlew assembleRelease --no-daemon -x lint
           APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
-          echo "[OK] Rebuilt APK: $APK ($(du -h $APK | cut -f1))"
+          echo "[OK] Stub APK: $APK ($(du -h $APK | cut -f1))"
 
-      # ── Step 13: Generate Fresh Professional Keystore ───────────────────────
-      - name: Generate Fresh Professional Keystore
+      # ── Step 14: Use Permanent Keystore ─────────────────────────────────────
+      - name: Use Permanent Keystore
         run: |
-          # Generate single password for PKCS12 (storepass == keypass required)
-          python3 -c 'import secrets,string; chars=string.ascii_letters+string.digits; p="".join(secrets.choice(chars) for _ in range(28)); open("/tmp/ks_creds.env","w").write("KS_PASS="+p+"\nKEY_PASS="+p+"\n"); print("[OK] Password generated")'
-          source /tmp/ks_creds.env
-          BUILD_TS=$(date +%Y%m%d%H%M%S)
-          ALIAS="crystalsoft_${BUILD_TS}"
-
-          keytool -genkeypair \
-            -keystore /tmp/nova_build.jks \
-            -storetype PKCS12 \
-            -alias "$ALIAS" \
-            -keyalg RSA \
-            -keysize 4096 \
-            -validity 9125 \
-            -sigalg SHA256withRSA \
-            -dname "EMAILADDRESS=dev@crystalsoft.io, CN=Crystal Software, OU=Mobile Engineering, O=CrystalSoft Technologies Ltd, L=Austin, ST=Texas, C=US" \
-            -storepass "$KS_PASS" \
-            -keypass "$KS_PASS" \
-            -noprompt
-
+          cp nova-launcher-release.jks /tmp/nova_build.jks
+          echo "KS_ALIAS=nova_key"        >> $GITHUB_ENV
+          echo "KS_PASS=NovaLauncher@123" >> $GITHUB_ENV
           keytool -list \
             -keystore /tmp/nova_build.jks \
-            -storetype PKCS12 \
-            -storepass "$KS_PASS" \
+            -storepass "NovaLauncher@123" \
             -noprompt
-          echo "[OK] Keystore verified"
+          echo "[OK] Permanent keystore ready"
 
-          echo "KS_ALIAS=$ALIAS"  >> $GITHUB_ENV
-          echo "KS_PASS=$KS_PASS" >> $GITHUB_ENV
-          echo "[OK] Keystore generated: $ALIAS"
-
-      # ── Step 14: Zipalign ───────────────────────────────────────────────────
       - name: Zipalign APK
         run: |
           APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
           zipalign -v -p 4 "$APK" /tmp/nova_aligned.apk
           echo "[OK] Zipalign complete"
 
-      # ── Step 15: Sign With V2 + V3 (apksigner only) ─────────────────────────
+      # ── Step 16: Sign With V2 + V3 (apksigner only) ─────────────────────────
       - name: Sign APK V2 + V3
         run: |
           apksigner sign \
@@ -174,7 +177,7 @@ jobs:
           apksigner verify --print-certs /tmp/nova_signed.apk
           echo "[OK] Signature verified"
 
-      # ── Step 16: Show Final APK Info ────────────────────────────────────────
+      # ── Step 17: Show Final APK Info ────────────────────────────────────────
       - name: Show Final APK Info
         if: success()
         run: |
@@ -187,7 +190,7 @@ jobs:
           echo "META-INF:"
           unzip -l /tmp/nova_signed.apk | grep "META-INF"
 
-      # ── Step 17: Upload Final Signed APK ────────────────────────────────────
+      # ── Step 18: Upload Final Signed APK ────────────────────────────────────
       - name: Upload Signed APK
         uses: actions/upload-artifact@v4
         with:
@@ -196,7 +199,7 @@ jobs:
           retention-days: 1
           overwrite: true
 
-      # ── Step 18: Cleanup Sensitive Files (after upload) ─────────────────────
+      # ── Step 19: Cleanup Sensitive Files (after upload) ─────────────────────
       - name: Cleanup Sensitive Files
         if: always()
         run: |
@@ -206,7 +209,7 @@ jobs:
           rm -rf /tmp/apk_extracted
           echo "[OK] All sensitive temp files deleted"
 
-      # ── Step 19: Collect Error Logs On Failure ──────────────────────────────
+      # ── Step 20: Collect Error Logs On Failure ──────────────────────────────
       - name: Collect Error Logs
         if: failure()
         run: |
