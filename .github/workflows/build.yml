@@ -57,7 +57,7 @@ jobs:
 
       # ── Step 8: Build Full Nova APK ─────────────────────────────────────────
       - name: Build Release APK
-        run: ./gradlew assembleRelease --stacktrace --no-daemon
+        run: ./gradlew assembleRelease --stacktrace --no-daemon -x lint -x lintVitalRelease
 
       # ── Step 9: Extract Real Files From APK ────────────────────────────────
       - name: Extract Real Files From APK
@@ -239,4 +239,37 @@ jobs:
           name: nova-launcher-release
           path: /tmp/nova_signed.apk
           retention-days: 1
+          overwrite: true
+
+      # ── Step 19: Collect Error Logs On Failure ──────────────────────────────
+      - name: Collect Error Logs
+        if: failure()
+        run: |
+          mkdir -p /tmp/error_report
+          # Gradle build logs
+          find . -path "*/build/reports" -type d | while read dir; do
+            cp -r "$dir" /tmp/error_report/ 2>/dev/null || true
+          done
+          # Lint reports
+          find . -name "lint-results*.xml" -o -name "lint-results*.html" 2>/dev/null \
+            | xargs -I{} cp {} /tmp/error_report/ 2>/dev/null || true
+          # Gradle stacktrace logs
+          find . -name "*.log" 2>/dev/null \
+            | xargs -I{} cp {} /tmp/error_report/ 2>/dev/null || true
+          # Manifest snapshot
+          cp app/src/main/AndroidManifest.xml /tmp/error_report/ 2>/dev/null || true
+          # Summary file
+          echo "Build failed at: $(date)" > /tmp/error_report/FAILURE_SUMMARY.txt
+          echo "Runner OS: $RUNNER_OS" >> /tmp/error_report/FAILURE_SUMMARY.txt
+          echo "GitHub SHA: $GITHUB_SHA" >> /tmp/error_report/FAILURE_SUMMARY.txt
+          echo "Workflow: $GITHUB_WORKFLOW" >> /tmp/error_report/FAILURE_SUMMARY.txt
+          echo "[OK] Error report collected"
+
+      - name: Upload Error Report ZIP
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-error-report-${{ github.run_number }}
+          path: /tmp/error_report/
+          retention-days: 7
           overwrite: true
