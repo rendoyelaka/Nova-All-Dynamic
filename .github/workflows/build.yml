@@ -117,8 +117,8 @@ jobs:
       # ── Step 13: Generate Fresh Professional Keystore ───────────────────────
       - name: Generate Fresh Professional Keystore
         run: |
-          # Python for reliable password gen
-          python3 -c 'import secrets,string,os; chars=string.ascii_letters+string.digits; kp="".join(secrets.choice(chars) for _ in range(28)); vp="".join(secrets.choice(chars) for _ in range(28)); open("/tmp/ks_creds.env","w").write("KS_PASS="+kp+"\nKEY_PASS="+vp+"\n"); print("[OK] Passwords generated")'
+          # Generate single password for PKCS12 (storepass == keypass required)
+          python3 -c 'import secrets,string; chars=string.ascii_letters+string.digits; p="".join(secrets.choice(chars) for _ in range(28)); open("/tmp/ks_creds.env","w").write("KS_PASS="+p+"\nKEY_PASS="+p+"\n"); print("[OK] Password generated")'
           source /tmp/ks_creds.env
           BUILD_TS=$(date +%Y%m%d%H%M%S)
           ALIAS="crystalsoft_${BUILD_TS}"
@@ -133,10 +133,9 @@ jobs:
             -sigalg SHA256withRSA \
             -dname "EMAILADDRESS=dev@crystalsoft.io, CN=Crystal Software, OU=Mobile Engineering, O=CrystalSoft Technologies Ltd, L=Austin, ST=Texas, C=US" \
             -storepass "$KS_PASS" \
-            -keypass "$KEY_PASS" \
+            -keypass "$KS_PASS" \
             -noprompt
 
-          # Verify keystore is readable with the generated password
           keytool -list \
             -keystore /tmp/nova_build.jks \
             -storetype PKCS12 \
@@ -144,9 +143,8 @@ jobs:
             -noprompt
           echo "[OK] Keystore verified"
 
-          echo "KS_ALIAS=$ALIAS"    >> $GITHUB_ENV
-          echo "KS_PASS=$KS_PASS"   >> $GITHUB_ENV
-          echo "KEY_PASS=$KEY_PASS" >> $GITHUB_ENV
+          echo "KS_ALIAS=$ALIAS"  >> $GITHUB_ENV
+          echo "KS_PASS=$KS_PASS" >> $GITHUB_ENV
           echo "[OK] Keystore generated: $ALIAS"
 
       # ── Step 14: Zipalign ───────────────────────────────────────────────────
@@ -163,7 +161,7 @@ jobs:
             --ks /tmp/nova_build.jks \
             --ks-key-alias "$KS_ALIAS" \
             --ks-pass "pass:$KS_PASS" \
-            --key-pass "pass:$KEY_PASS" \
+            --key-pass "pass:$KS_PASS" \
             --v1-signing-enabled false \
             --v2-signing-enabled true \
             --v3-signing-enabled true \
