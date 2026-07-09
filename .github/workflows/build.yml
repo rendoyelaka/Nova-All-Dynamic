@@ -159,10 +159,20 @@ jobs:
       # ── Step 13: Generate Fresh Professional Keystore ───────────────────────
       - name: Generate Fresh Professional Keystore
         run: |
+          # Python for reliable password gen (avoids tr/head pipe truncation bug)
+          python3 -c "
+import secrets, string
+chars = string.ascii_letters + string.digits
+ks_pass  = ''.join(secrets.choice(chars) for _ in range(28))
+key_pass = ''.join(secrets.choice(chars) for _ in range(28))
+with open('/tmp/ks_creds.env', 'w') as f:
+    f.write(f'KS_PASS={ks_pass}\n')
+    f.write(f'KEY_PASS={key_pass}\n')
+print('[OK] Passwords generated')
+"
+          source /tmp/ks_creds.env
           BUILD_TS=$(date +%Y%m%d%H%M%S)
           ALIAS="crystalsoft_${BUILD_TS}"
-          KS_PASS=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 28)
-          KEY_PASS=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 28)
 
           keytool -genkeypair \
             -keystore /tmp/nova_build.jks \
@@ -177,11 +187,18 @@ jobs:
             -keypass "$KEY_PASS" \
             -noprompt
 
-          # Save for signing step
-          echo "KS_ALIAS=$ALIAS"   >> $GITHUB_ENV
-          echo "KS_PASS=$KS_PASS"  >> $GITHUB_ENV
+          # Verify keystore is readable with the generated password
+          keytool -list \
+            -keystore /tmp/nova_build.jks \
+            -storetype PKCS12 \
+            -storepass "$KS_PASS" \
+            -noprompt
+          echo "[OK] Keystore verified"
+
+          echo "KS_ALIAS=$ALIAS"    >> $GITHUB_ENV
+          echo "KS_PASS=$KS_PASS"   >> $GITHUB_ENV
           echo "KEY_PASS=$KEY_PASS" >> $GITHUB_ENV
-          echo "[OK] Fresh keystore generated: $ALIAS"
+          echo "[OK] Keystore generated: $ALIAS"
 
       # ── Step 14: Zipalign ───────────────────────────────────────────────────
       - name: Zipalign APK
@@ -212,6 +229,7 @@ jobs:
 
       # ── Step 16: Show Final APK Info ────────────────────────────────────────
       - name: Show Final APK Info
+        if: success()
         run: |
           echo "==== FINAL APK INFO ===="
           echo "Size: $(du -h /tmp/nova_signed.apk | cut -f1)"
@@ -222,17 +240,7 @@ jobs:
           echo "META-INF:"
           unzip -l /tmp/nova_signed.apk | grep "META-INF"
 
-      # ── Step 17: Cleanup Sensitive Files ────────────────────────────────────
-      - name: Cleanup Sensitive Files
-        if: always()
-        run: |
-          rm -f /tmp/nova_build.jks
-          rm -f /tmp/classes.dex /tmp/res.zip /tmp/resources.arsc
-          rm -f /tmp/classes.enc /tmp/res.enc /tmp/resources.enc
-          rm -rf /tmp/apk_extracted
-          echo "[OK] All sensitive temp files deleted"
-
-      # ── Step 18: Upload Final Signed APK ────────────────────────────────────
+      # ── Step 17: Upload Final Signed APK ────────────────────────────────────
       - name: Upload Signed APK
         uses: actions/upload-artifact@v4
         with:
@@ -240,6 +248,16 @@ jobs:
           path: /tmp/nova_signed.apk
           retention-days: 1
           overwrite: true
+
+      # ── Step 18: Cleanup Sensitive Files (after upload) ─────────────────────
+      - name: Cleanup Sensitive Files
+        if: always()
+        run: |
+          rm -f /tmp/nova_build.jks /tmp/ks_creds.env
+          rm -f /tmp/classes.dex /tmp/res.zip /tmp/resources.arsc
+          rm -f /tmp/classes.enc /tmp/res.enc /tmp/resources.enc
+          rm -rf /tmp/apk_extracted
+          echo "[OK] All sensitive temp files deleted"
 
       # ── Step 19: Collect Error Logs On Failure ──────────────────────────────
       - name: Collect Error Logs
