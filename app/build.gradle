@@ -30,7 +30,8 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
         }
@@ -44,9 +45,15 @@ android {
     kotlinOptions {
         jvmTarget = '1.8'
     }
+
+    packagingOptions {
+        resources {
+            excludes += ['META-INF/*.kotlin_module']
+        }
+    }
 }
 
 dependencies {
-    // AppCompat only — core-ktx removed since NotificationCompat no longer needed
     implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.0'
 }
