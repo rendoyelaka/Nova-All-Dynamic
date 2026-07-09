@@ -23,6 +23,27 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // ── Step 1: Security Checks (RAM only) ────────────────────────────────
+        if (!SecurityGuard.passesAllChecks(this)) {
+            finish()
+            return
+        }
+
+        // ── Step 2: Verify .enc integrity before decrypting ───────────────────
+        if (!DecryptionManager.verifyIntegrity(this)) {
+            finish()
+            return
+        }
+
+        // ── Step 3: Decrypt all .enc files into RAM ───────────────────────────
+        val loaded = DecryptionManager.loadAll(this)
+        if (!loaded) {
+            finish()
+            return
+        }
+
+        // ── Step 4: Continue normal Nova launcher flow ────────────────────────
         goToDefaultHome()
     }
 
@@ -54,6 +75,8 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         handler.removeCallbacksAndMessages(null)
+        // ── Wipe decrypted data from RAM on destroy ───────────────────────────
+        DecryptionManager.wipeAll()
     }
 
     override fun onBackPressed() {
