@@ -1,0 +1,52 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.cristal.bristral.tristal.mistral'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.cristal.bristral.tristal.mistral"
+        minSdk 28
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+
+        ndk {
+            abiFilters "armeabi-v7a", "arm64-v8a"
+        }
+    }
+
+    signingConfigs {
+        release {
+            storeFile file("${project.rootDir}/nova-launcher-release.jks")
+            storePassword "NovaLauncher@123"
+            keyAlias "nova_key"
+            keyPassword "NovaLauncher@123"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+}
+
+dependencies {
+    // AppCompat only — core-ktx removed since NotificationCompat no longer needed
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+}
